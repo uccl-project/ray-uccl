@@ -59,6 +59,28 @@ def __ray_send__(self, communicator_name: str, obj_id: str, dst_rank: int):
     # is consumed once.
     gpu_object_manager.remove_gpu_object(obj_id)
 
+import socket
+import struct
+
+def parse_metadata(metadata: bytes):
+    if len(metadata) == 10:
+        # IPv4: 4 bytes IP, 2 bytes port, 4 bytes GPU idx
+        ip_bytes = metadata[:4]
+        port_bytes = metadata[4:6]
+        gpu_idx_bytes = metadata[6:10]
+        ip = socket.inet_ntop(socket.AF_INET, ip_bytes)
+    elif len(metadata) == 22:
+        # IPv6: 16 bytes IP, 2 bytes port, 4 bytes GPU idx
+        ip_bytes = metadata[:16]
+        port_bytes = metadata[16:18]
+        gpu_idx_bytes = metadata[18:22]
+        ip = socket.inet_ntop(socket.AF_INET6, ip_bytes)
+    else:
+        raise ValueError(f"Unexpected metadata length: {len(metadata)}")
+    
+    port = struct.unpack('!H', port_bytes)[0]
+    remote_gpu_idx = struct.unpack('i', gpu_idx_bytes)[0]  # host byte order
+    return ip, port, remote_gpu_idx
 
 def __ray_recv__(
     self,
@@ -75,11 +97,24 @@ def __ray_recv__(
 
     gpu_object_manager = global_worker.gpu_object_manager
     tensors = []
+    tensor_meta, uccl_endpoint_meta = tensor_meta
     for meta in tensor_meta:
         shape, dtype = meta
         tensor = torch.zeros(shape, dtype=dtype, device=device)
-        collective.recv(tensor, src_rank, group_name=communicator_name)
+        # collective.recv(tensor, src_rank, group_name=communicator_name)
         tensors.append(tensor)
+        
+    uccl_endpoint = gpu_object_manager.init_uccl_endpoint()
+    ip, port, r_gpu = parse_metadata(uccl_endpoint_meta)
+    ok, conn_id = uccl_endpoint.connect(ip, r_gpu, remote_port=port)
+    
+    # TODO(MaoZiming): where to accept. 
+    total_size = sum(t.numel() * t.element_size() for t in tensors)
+    ok, mr_id = uccl_endpoint.reg(tensors, total_size)
+    assert ok, "[Client] register failed"
+    ok = uccl_endpoint.send(conn_id, mr_id, tensors, total_size)
+    assert ok, "[Client] send error"
+    
     gpu_object_manager.add_gpu_object(obj_id, tensors)
 
 

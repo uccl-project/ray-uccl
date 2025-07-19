@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple
 
+from uccl import p2p
+
 import ray
 from ray._private.custom_types import TensorTransportEnum
 from ray._raylet import ObjectRef
@@ -46,7 +48,16 @@ class GPUObjectManager:
         self.gpu_object_store: Dict[str, List["torch.Tensor"]] = {}
         # A dictionary that maps from owned object's ID to GPUObjectMeta.
         self.managed_gpu_object_metadata: Dict[str, GPUObjectMeta] = {}
+        
+        self.endpoint = None
 
+    def init_uccl_endpoint(self):
+        if self.endpoint is None:
+            ctx = ray.get_runtime_context()
+            actor_id = ctx.get_actor_id()
+            self.endpoint = p2p.Endpoint(0, 4)
+        return self.endpoint
+    
     def has_gpu_object(self, obj_id: str) -> bool:
         return obj_id in self.gpu_object_store
 
@@ -54,6 +65,7 @@ class GPUObjectManager:
         return self.gpu_object_store[obj_id]
 
     def add_gpu_object(self, obj_id: str, gpu_object: List["torch.Tensor"]):
+        self.init_uccl_endpoint()
         self.gpu_object_store[obj_id] = gpu_object
 
     def remove_gpu_object(self, obj_id: str):
@@ -72,7 +84,9 @@ class GPUObjectManager:
                 obj_id
             ), f"obj_id={obj_id} not found in GPU object store"
             tensors = gpu_object_manager.get_gpu_object(obj_id)
-            return [(t.shape, t.dtype) for t in tensors]
+            
+            endpoint = gpu_object_manager.init_uccl_endpoint()
+            return [(t.shape, t.dtype) for t in tensors], endpoint.get_endpoint_metadata()
 
         return src_actor.__ray_call__.remote(__ray_get_tensor_meta__, obj_id)
 
@@ -125,6 +139,7 @@ class GPUObjectManager:
     ):
         # Send tensors stored in the `src_actor`'s GPU object store to the
         # destination rank `dst_rank`.
+        return
         util = _get_or_import_util()
         src_actor.__ray_call__.remote(
             util.__ray_send__, communicator_name, obj_id, dst_rank
