@@ -224,3 +224,7 @@ try-import %workspace%/.llvm-local.bazelrc
 build:macos --sandbox_block_path=/usr/local/
 # This option controls whether javac checks for missing direct dependencies.
 build --experimental_strict_java_deps=off
+build --copt=-Wno-error=stringop-overflow
+build --host_copt=-Wno-error=stringop-overflow
+build --cxxopt=-Wno-error=stringop-overflow
+build --host_cxxopt=-Wno-error=stringop-overflow
