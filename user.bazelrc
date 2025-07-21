@@ -1,5 +1,0 @@
-# Disable the offending warning everywhere, host & target
-build --copt=-Wno-error=stringop-overflow
-build --host_copt=-Wno-error=stringop-overflow
-build --cxxopt=-Wno-error=stringop-overflow
-build --host_cxxopt=-Wno-error=stringop-overflow

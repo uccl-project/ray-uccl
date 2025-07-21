@@ -64,28 +64,6 @@ def __ray_send__(self, communicator_name: str, obj_id: str, dst_rank: int):
     # is consumed once.
     gpu_object_manager.remove_gpu_object(obj_id)
 
-import socket
-import struct
-
-def parse_metadata(metadata: bytes):
-    if len(metadata) == 10:
-        # IPv4: 4 bytes IP, 2 bytes port, 4 bytes GPU idx
-        ip_bytes = metadata[:4]
-        port_bytes = metadata[4:6]
-        gpu_idx_bytes = metadata[6:10]
-        ip = socket.inet_ntop(socket.AF_INET, ip_bytes)
-    elif len(metadata) == 22:
-        # IPv6: 16 bytes IP, 2 bytes port, 4 bytes GPU idx
-        ip_bytes = metadata[:16]
-        port_bytes = metadata[16:18]
-        gpu_idx_bytes = metadata[18:22]
-        ip = socket.inet_ntop(socket.AF_INET6, ip_bytes)
-    else:
-        raise ValueError(f"Unexpected metadata length: {len(metadata)}")
-    
-    port = struct.unpack('!H', port_bytes)[0]
-    remote_gpu_idx = struct.unpack('i', gpu_idx_bytes)[0]  # host byte order
-    return ip, port, remote_gpu_idx
 
 def __ray_recv__(
     self,
@@ -96,7 +74,6 @@ def __ray_recv__(
 ):
     """Helper function that runs on the dst actor to receive tensors from the src actor."""
     from ray._private.worker import global_worker
-    print(f"Receiving GPU object {obj_id} from rank {src_rank} via {communicator_name}")
 
     backend = collective.get_group_handle(communicator_name).backend()
     device = COLLECTIVE_BACKEND_TO_TORCH_DEVICE[backend]
