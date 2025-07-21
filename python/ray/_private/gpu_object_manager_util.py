@@ -37,25 +37,11 @@ def tensor_transport_to_collective_backend(
 
 def __ray_send__(self, communicator_name: str, obj_id: str, dst_rank: int):
     """Helper function that runs on the src actor to send tensors to the dst actor."""
-    print(f"Sending GPU object {obj_id} to rank {dst_rank} via {communicator_name}")
     gpu_object_manager = global_worker.gpu_object_manager
     assert gpu_object_manager.has_gpu_object(
         obj_id
     ), f"obj_id={obj_id} not found in GPU object store"
     tensors = gpu_object_manager.get_gpu_object(obj_id)
-
-    # backend = collective.get_group_handle(communicator_name).backend()
-    # device = COLLECTIVE_BACKEND_TO_TORCH_DEVICE[backend]
-
-    # for tensor in tensors:
-    #     if tensor.device.type != device.type:
-    #         # TODO(swang): Right now there is no way to catch this error
-    #         # and the receiving Ray task will hang.
-    #         raise ValueError(
-    #             f"tensor device {tensor.device} does not match device {device}"
-    #         )
-        # collective.send(tensor, dst_rank, group_name=communicator_name)
-    
     meta = gpu_object_manager.reg_uccl_endpoint(tensors)
     gpu_object_manager.send_uccl_endpoint(tensors, meta)
     

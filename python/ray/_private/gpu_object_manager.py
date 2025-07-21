@@ -113,12 +113,6 @@ class GPUObjectManager:
             ptrs.append(p)
             sizes.append(sz)
         return mr_ids, ptrs, sizes 
-
-    # def reg_uccl_endpoint(self, tensors: List["torch.Tensor"], total_size: int) -> Tuple[bool, int]:
-    #     """Register tensors with the UCCL endpoint."""
-    #     ok, mr_id = self.endpoint.reg(tensors, total_size)
-    #     assert ok, "[Client] register failed"
-    #     return ok, mr_id
     
     def has_gpu_object(self, obj_id: str) -> bool:
         return obj_id in self.gpu_object_store
