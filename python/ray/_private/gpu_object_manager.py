@@ -56,26 +56,6 @@ class GPUObjectManager:
         self.endpoint_metadata: Optional[bytes] = None
         self.conn_id_of_peer: Optional[int] = None
 
-    def _parse_metadata(self, metadata: bytes):
-        if len(metadata) == 10:
-            # IPv4: 4 bytes IP, 2 bytes port, 4 bytes GPU idx
-            ip_bytes = metadata[:4]
-            port_bytes = metadata[4:6]
-            gpu_idx_bytes = metadata[6:10]
-            ip = socket.inet_ntop(socket.AF_INET, ip_bytes)
-        elif len(metadata) == 22:
-            # IPv6: 16 bytes IP, 2 bytes port, 4 bytes GPU idx
-            ip_bytes = metadata[:16]
-            port_bytes = metadata[16:18]
-            gpu_idx_bytes = metadata[18:22]
-            ip = socket.inet_ntop(socket.AF_INET6, ip_bytes)
-        else:
-            raise ValueError(f"Unexpected metadata length: {len(metadata)}")
-        
-        port = struct.unpack('!H', port_bytes)[0]
-        remote_gpu_idx = struct.unpack('i', gpu_idx_bytes)[0]  # host byte order
-        return ip, port, remote_gpu_idx
-
     def init_uccl_endpoint(self) -> bytes:
         if self.endpoint is None:
             self.endpoint = p2p.Endpoint(0, 4)
@@ -99,9 +79,7 @@ class GPUObjectManager:
             self.conn_id_of_peer = conn_id
         else:
             assert metadata is not None, "Metadata must be provided for sender"
-            ip, port, remote_gpu_idx = self._parse_metadata(metadata)
-            print(f"Client parsed server IP: {ip}, port: {port}, remote_gpu_idx: {remote_gpu_idx}")
-            success, self.conn_id_of_peer = self.endpoint.connect(remote_ip_addr=ip, remote_gpu_idx=remote_gpu_idx, remote_port=port)
+            success, self.conn_id_of_peer = self.endpoint.connect(metadata)
             assert success
             print(f"Client connected successfully: conn_id={self.conn_id_of_peer}")
     

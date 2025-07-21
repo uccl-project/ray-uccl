@@ -29,8 +29,7 @@ class GPUTestActor:
 
 @ray.remote
 class UcclTestActor:
-    def __init__(self, rank: int):
-        self.rank = rank
+    def __init__(self):
         self.gom: GPUObjectManager = ray._private.worker.global_worker.gpu_object_manager
         self.meta: bytes = self.gom.init_uccl_endpoint()
         
@@ -52,16 +51,15 @@ class UcclTestActor:
 
 def test_inter_actor_gpu_tensor_transfer_uccl(ray_start_regular):
     world_size = 2
-    actors = [UcclTestActor.remote(rank=i) for i in range(world_size)]
-
+    actors = [UcclTestActor.remote() for _ in range(world_size)]
     meta0, meta1 = ray.get([actors[0].get_metadata.remote(),
                             actors[1].get_metadata.remote()])
-
     ray.get([
         actors[0].rendezvous.remote(is_sender=True,  peer_meta=meta1),   
         actors[1].rendezvous.remote(is_sender=False, peer_meta=meta0),   
     ])
 
+    # Dummy
     create_collective_group(actors, backend="torch_gloo")
 
     small_tensor = torch.randn((1,))
