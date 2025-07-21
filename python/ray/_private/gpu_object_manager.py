@@ -6,6 +6,9 @@ import ray
 from ray._private.custom_types import TensorTransportEnum
 from ray._raylet import ObjectRef
 from ray.actor import ActorHandle
+import socket
+import struct
+
 
 # Avoid importing util until needed because it requires several external
 # dependencies like torch and cupy. These dependencies can significantly slow
@@ -49,14 +52,95 @@ class GPUObjectManager:
         # A dictionary that maps from owned object's ID to GPUObjectMeta.
         self.managed_gpu_object_metadata: Dict[str, GPUObjectMeta] = {}
         
-        self.endpoint = None
+        self.endpoint: Optional[p2p.Endpoint] = None
+        self.endpoint_metadata: Optional[bytes] = None
+        self.conn_id_of_peer: Optional[int] = None
 
-    def init_uccl_endpoint(self):
+    def _parse_metadata(self, metadata: bytes):
+        if len(metadata) == 10:
+            # IPv4: 4 bytes IP, 2 bytes port, 4 bytes GPU idx
+            ip_bytes = metadata[:4]
+            port_bytes = metadata[4:6]
+            gpu_idx_bytes = metadata[6:10]
+            ip = socket.inet_ntop(socket.AF_INET, ip_bytes)
+        elif len(metadata) == 22:
+            # IPv6: 16 bytes IP, 2 bytes port, 4 bytes GPU idx
+            ip_bytes = metadata[:16]
+            port_bytes = metadata[16:18]
+            gpu_idx_bytes = metadata[18:22]
+            ip = socket.inet_ntop(socket.AF_INET6, ip_bytes)
+        else:
+            raise ValueError(f"Unexpected metadata length: {len(metadata)}")
+        
+        port = struct.unpack('!H', port_bytes)[0]
+        remote_gpu_idx = struct.unpack('i', gpu_idx_bytes)[0]  # host byte order
+        return ip, port, remote_gpu_idx
+
+    def init_uccl_endpoint(self) -> bytes:
         if self.endpoint is None:
-            ctx = ray.get_runtime_context()
-            actor_id = ctx.get_actor_id()
             self.endpoint = p2p.Endpoint(0, 4)
+            self.endpoint_metadata = self.endpoint.get_endpoint_metadata()
+            print(f"UCCL endpoint initialized: {self.endpoint}")
+        return self.endpoint_metadata
+    
+    def get_uccl_endpoint(self) -> p2p.Endpoint:
+        assert self.endpoint is not None, "UCCL endpoint is not initialized"
         return self.endpoint
+    
+    def rendezvous_uccl_endpoint(self, is_sender: bool = False, metadata = None):
+        """Rendezvous the UCCL endpoint for out-of-band tensor transfer."""
+        assert self.endpoint is not None
+        if not is_sender:
+            success, remote_ip_addr, remote_gpu_idx, conn_id = self.endpoint.accept()
+            assert success
+            print(
+                f"Server accepted connection from {remote_ip_addr}, GPU {remote_gpu_idx}, conn_id={conn_id}"
+            ) 
+            self.conn_id_of_peer = conn_id
+        else:
+            assert metadata is not None, "Metadata must be provided for sender"
+            ip, port, remote_gpu_idx = self._parse_metadata(metadata)
+            print(f"Client parsed server IP: {ip}, port: {port}, remote_gpu_idx: {remote_gpu_idx}")
+            success, self.conn_id_of_peer = self.endpoint.connect(remote_ip_addr=ip, remote_gpu_idx=remote_gpu_idx, remote_port=port)
+            assert success
+            print(f"Client connected successfully: conn_id={self.conn_id_of_peer}")
+    
+    def send_uccl_endpoint(self, tensors, meta):
+        mr_ids, ptrs, sizes = meta
+        ok = self.endpoint.sendv(self.conn_id_of_peer,
+                                mr_ids, ptrs, sizes, len(tensors))
+        if not ok:
+            raise RuntimeError("UCCL sendv failed")
+    
+    def recv_uccl_endpoint(self, tensors):
+        meta = self.reg_uccl_endpoint(tensors)
+        mr_ids, ptrs, sizes = meta
+        ok = self.endpoint.recvv(self.conn_id_of_peer,
+                                mr_ids, ptrs, sizes, len(tensors))
+        if not ok:
+            raise RuntimeError("UCCL recvv failed")
+
+    def _ptr_and_size(self, t):
+        """Return (data_ptr:int, nbytes:int) for a torch tensor."""
+        return int(t.data_ptr()), t.numel() * t.element_size()
+
+    def reg_uccl_endpoint(self, tensors):
+        mr_ids, ptrs, sizes = [], [], []
+        for t in tensors:
+            p, sz = self._ptr_and_size(t)
+            ok, mr = self.endpoint.reg(p, sz)
+            if not ok:
+                raise RuntimeError("UCCL reg failed")
+            mr_ids.append(mr)
+            ptrs.append(p)
+            sizes.append(sz)
+        return mr_ids, ptrs, sizes 
+
+    # def reg_uccl_endpoint(self, tensors: List["torch.Tensor"], total_size: int) -> Tuple[bool, int]:
+    #     """Register tensors with the UCCL endpoint."""
+    #     ok, mr_id = self.endpoint.reg(tensors, total_size)
+    #     assert ok, "[Client] register failed"
+    #     return ok, mr_id
     
     def has_gpu_object(self, obj_id: str) -> bool:
         return obj_id in self.gpu_object_store
@@ -65,7 +149,6 @@ class GPUObjectManager:
         return self.gpu_object_store[obj_id]
 
     def add_gpu_object(self, obj_id: str, gpu_object: List["torch.Tensor"]):
-        self.init_uccl_endpoint()
         self.gpu_object_store[obj_id] = gpu_object
 
     def remove_gpu_object(self, obj_id: str):
@@ -84,9 +167,7 @@ class GPUObjectManager:
                 obj_id
             ), f"obj_id={obj_id} not found in GPU object store"
             tensors = gpu_object_manager.get_gpu_object(obj_id)
-            
-            endpoint = gpu_object_manager.init_uccl_endpoint()
-            return [(t.shape, t.dtype) for t in tensors], endpoint.get_endpoint_metadata()
+            return [(t.shape, t.dtype) for t in tensors]
 
         return src_actor.__ray_call__.remote(__ray_get_tensor_meta__, obj_id)
 
@@ -139,7 +220,6 @@ class GPUObjectManager:
     ):
         # Send tensors stored in the `src_actor`'s GPU object store to the
         # destination rank `dst_rank`.
-        return
         util = _get_or_import_util()
         src_actor.__ray_call__.remote(
             util.__ray_send__, communicator_name, obj_id, dst_rank

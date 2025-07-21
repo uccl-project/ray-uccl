@@ -5,7 +5,8 @@ import pytest
 import ray
 from ray.experimental.collective import create_collective_group
 from ray._private.custom_types import TensorTransportEnum
-
+from ray._private.gpu_object_manager import GPUObjectManager
+from typing import List, Tuple
 
 @ray.remote
 class GPUTestActor:
@@ -26,6 +27,55 @@ class GPUTestActor:
             return gpu_object
         return None
 
+@ray.remote
+class UcclTestActor:
+    def __init__(self, rank: int):
+        self.rank = rank
+        self.gom: GPUObjectManager = ray._private.worker.global_worker.gpu_object_manager
+        self.meta: bytes = self.gom.init_uccl_endpoint()
+        
+    def get_metadata(self) -> bytes:
+        return self.meta
+
+    def rendezvous(self, is_sender: bool, peer_meta: bytes) -> None:
+        self.gom.rendezvous_uccl_endpoint(is_sender=is_sender,
+                                          metadata=peer_meta)
+
+    @ray.method(tensor_transport="gloo")
+    def echo(self, data):
+        return data
+
+    def double(self, data):
+        if isinstance(data, list):
+            return [d * 2 for d in data]
+        return data * 2
+
+def test_inter_actor_gpu_tensor_transfer_uccl(ray_start_regular):
+    world_size = 2
+    actors = [UcclTestActor.remote(rank=i) for i in range(world_size)]
+
+    meta0, meta1 = ray.get([actors[0].get_metadata.remote(),
+                            actors[1].get_metadata.remote()])
+
+    ray.get([
+        actors[0].rendezvous.remote(is_sender=True,  peer_meta=meta1),   
+        actors[1].rendezvous.remote(is_sender=False, peer_meta=meta0),   
+    ])
+
+    create_collective_group(actors, backend="torch_gloo")
+
+    small_tensor = torch.randn((1,))
+    sender = actors[0]
+    receiver = actors[1]
+
+    ref = sender.echo.remote(small_tensor)
+    result = receiver.double.remote(ref)
+    assert ray.get(result) == pytest.approx(small_tensor * 2)
+
+    medium_tensor = torch.randn((500, 500))
+    ref = sender.echo.remote(medium_tensor)
+    result = receiver.double.remote(ref)
+    assert ray.get(result) == pytest.approx(medium_tensor * 2)
 
 def test_inter_actor_gpu_tensor_transfer(ray_start_regular):
     world_size = 2

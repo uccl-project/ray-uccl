@@ -37,23 +37,28 @@ def tensor_transport_to_collective_backend(
 
 def __ray_send__(self, communicator_name: str, obj_id: str, dst_rank: int):
     """Helper function that runs on the src actor to send tensors to the dst actor."""
+    print(f"Sending GPU object {obj_id} to rank {dst_rank} via {communicator_name}")
     gpu_object_manager = global_worker.gpu_object_manager
     assert gpu_object_manager.has_gpu_object(
         obj_id
     ), f"obj_id={obj_id} not found in GPU object store"
     tensors = gpu_object_manager.get_gpu_object(obj_id)
 
-    backend = collective.get_group_handle(communicator_name).backend()
-    device = COLLECTIVE_BACKEND_TO_TORCH_DEVICE[backend]
+    # backend = collective.get_group_handle(communicator_name).backend()
+    # device = COLLECTIVE_BACKEND_TO_TORCH_DEVICE[backend]
 
-    for tensor in tensors:
-        if tensor.device.type != device.type:
-            # TODO(swang): Right now there is no way to catch this error
-            # and the receiving Ray task will hang.
-            raise ValueError(
-                f"tensor device {tensor.device} does not match device {device}"
-            )
-        collective.send(tensor, dst_rank, group_name=communicator_name)
+    # for tensor in tensors:
+    #     if tensor.device.type != device.type:
+    #         # TODO(swang): Right now there is no way to catch this error
+    #         # and the receiving Ray task will hang.
+    #         raise ValueError(
+    #             f"tensor device {tensor.device} does not match device {device}"
+    #         )
+        # collective.send(tensor, dst_rank, group_name=communicator_name)
+    
+    meta = gpu_object_manager.reg_uccl_endpoint(tensors)
+    gpu_object_manager.send_uccl_endpoint(tensors, meta)
+    
     # TODO(kevin85421): The current garbage collection implementation for the
     # in-actor object store is naive. We garbage collect each object after it
     # is consumed once.
@@ -91,30 +96,20 @@ def __ray_recv__(
 ):
     """Helper function that runs on the dst actor to receive tensors from the src actor."""
     from ray._private.worker import global_worker
+    print(f"Receiving GPU object {obj_id} from rank {src_rank} via {communicator_name}")
 
     backend = collective.get_group_handle(communicator_name).backend()
     device = COLLECTIVE_BACKEND_TO_TORCH_DEVICE[backend]
 
     gpu_object_manager = global_worker.gpu_object_manager
     tensors = []
-    tensor_meta, uccl_endpoint_meta = tensor_meta
     for meta in tensor_meta:
         shape, dtype = meta
         tensor = torch.zeros(shape, dtype=dtype, device=device)
         # collective.recv(tensor, src_rank, group_name=communicator_name)
         tensors.append(tensor)
         
-    uccl_endpoint = gpu_object_manager.init_uccl_endpoint()
-    ip, port, r_gpu = parse_metadata(uccl_endpoint_meta)
-    ok, conn_id = uccl_endpoint.connect(ip, r_gpu, remote_port=port)
-    
-    # TODO(MaoZiming): where to accept. 
-    total_size = sum(t.numel() * t.element_size() for t in tensors)
-    ok, mr_id = uccl_endpoint.reg(tensors, total_size)
-    assert ok, "[Client] register failed"
-    ok = uccl_endpoint.send(conn_id, mr_id, tensors, total_size)
-    assert ok, "[Client] send error"
-    
+    gpu_object_manager.recv_uccl_endpoint(tensors)    
     gpu_object_manager.add_gpu_object(obj_id, tensors)
 
 
