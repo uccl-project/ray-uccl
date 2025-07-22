@@ -103,17 +103,16 @@ class GPUObjectManager:
         return int(t.data_ptr()), t.numel() * t.element_size()
 
     def reg_uccl_endpoint(self, tensors):
-        mr_ids, ptrs, sizes = [], [], []
+        ptrs, sizes = [], []
         for t in tensors:
             p, sz = self._ptr_and_size(t)
-            ok, mr = self.endpoint.reg(p, sz)
-            if not ok:
-                raise RuntimeError("UCCL reg failed")
-            mr_ids.append(mr)
             ptrs.append(p)
             sizes.append(sz)
-        return mr_ids, ptrs, sizes 
-    
+        ok, mr_ids = self.endpoint.regv(tensors)
+        if not ok:
+            raise RuntimeError("UCCL regv failed")
+        return mr_ids, ptrs, sizes
+        
     def has_gpu_object(self, obj_id: str) -> bool:
         return obj_id in self.gpu_object_store
 
